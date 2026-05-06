@@ -1,0 +1,9 @@
+# Replace `@your-org/your-team` with the GitHub team(s) that should review
+# changes in this private registry.
+
+*                            @your-org/your-team
+/modules/                    @your-org/your-team
+/scanners/                   @your-org/your-team
+/run-tasks/                  @your-org/your-team
+/chaos-providers/            @your-org/your-team
+/.github/                    @your-org/your-team

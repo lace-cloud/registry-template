@@ -1,0 +1,171 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/**'
+      - 'scanners/**'
+      - 'run-tasks/**'
+      - 'chaos-providers/**'
+  workflow_dispatch:
+    inputs:
+      manifest_dir:
+        description: 'Manifest dir (e.g., scanners/acme/sox-compliance)'
+        required: true
+        type: string
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+
+    outputs:
+      manifests_json: ${{ steps.resolve.outputs.manifests_json }}
+      manifests_found: ${{ steps.resolve.outputs.manifests_found }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Resolve manifests
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DIR="${{ inputs.manifest_dir }}"
+            [ -d "$DIR" ]               || { echo "::error::Directory not found: $DIR"; exit 1; }
+            [ -f "$DIR/manifest.yaml" ] || { echo "::error::manifest.yaml missing in $DIR"; exit 1; }
+            echo "Manual trigger: $DIR"
+            echo "manifests_json=[\"$DIR\"]" >> $GITHUB_OUTPUT
+            echo "manifests_found=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          changed=$(git diff --name-only --diff-filter=AM HEAD^ HEAD \
+            | grep -E '^(modules|scanners|run-tasks|chaos-providers)/' || true)
+          if [ -z "$changed" ]; then
+            echo "No manifest changes detected"
+            echo "manifests_found=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          find_manifest_root() {
+            local dir
+            dir=$(dirname "$1")
+            while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
+              [ -f "$dir/manifest.yaml" ] && echo "$dir" && return 0
+              dir=$(dirname "$dir")
+            done
+            return 1
+          }
+
+          dirs=""
+          for f in $changed; do
+            root=$(find_manifest_root "$f") && dirs="$dirs$root"$'\n'
+          done
+
+          unique=$(echo "$dirs" | sort -u | sed '/^$/d')
+          if [ -z "$unique" ]; then
+            echo "No publishable manifests found"
+            echo "manifests_found=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Manifests to publish:"
+          echo "$unique"
+          json=$(echo "$unique" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "manifests_json=$json" >> $GITHUB_OUTPUT
+          echo "manifests_found=true" >> $GITHUB_OUTPUT
+
+  register:
+    name: Register
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: needs.prepare.outputs.manifests_found == 'true'
+
+    strategy:
+      matrix:
+        manifest_dir: ${{ fromJson(needs.prepare.outputs.manifests_json) }}
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lace CLI
+        run: |
+          wget -q https://releases.lace.cloud/lace-cli-linux-amd64 -O lace
+          chmod +x lace && sudo mv lace /usr/local/bin/lace
+
+      - name: Authenticate
+        env:
+          LACE_REGISTRY_KEY: ${{ secrets.LACE_REGISTRY_KEY }}
+        run: |
+          [ -z "$LACE_REGISTRY_KEY" ] && { echo "::error::LACE_REGISTRY_KEY secret not set"; exit 1; }
+          lace whoami
+
+      - name: Resolve axis
+        id: axis
+        run: |
+          DIR="${{ matrix.manifest_dir }}"
+          AXIS_DIR=$(echo "$DIR" | cut -d/ -f1)
+          case "$AXIS_DIR" in
+            modules)         AXIS=module ;;
+            scanners)        AXIS=scanner ;;
+            run-tasks)       AXIS=run_task ;;
+            chaos-providers) AXIS=chaos_provider ;;
+            *)               echo "::error::Unknown axis dir: $AXIS_DIR"; exit 1 ;;
+          esac
+          echo "axis=$AXIS" >> $GITHUB_OUTPUT
+
+      - name: Register
+        env:
+          LACE_REGISTRY_KEY: ${{ secrets.LACE_REGISTRY_KEY }}
+        run: |
+          DIR="${{ matrix.manifest_dir }}"
+          AXIS="${{ steps.axis.outputs.axis }}"
+          README_FLAG=""
+          [ -f "$DIR/README.md" ] && README_FLAG="--readme $DIR/README.md"
+          lace registry register \
+            --axis "$AXIS" \
+            --manifest "$DIR/manifest.yaml" \
+            $README_FLAG
+
+  summary:
+    name: Summary
+    runs-on: ubuntu-latest
+    needs: [prepare, register]
+    if: always()
+
+    steps:
+      - name: Report
+        run: |
+          echo "# Registry Publish" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.prepare.outputs.manifests_found }}" != "true" ]; then
+            echo "No manifest changes detected." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          echo "## Manifests" >> $GITHUB_STEP_SUMMARY
+          echo '${{ needs.prepare.outputs.manifests_json }}' \
+            | jq -r '.[] | "- `" + . + "`"' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.register.result }}" = "success" ]; then
+            echo "**Result:** All manifests registered." >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.register.result }}" = "failure" ]; then
+            echo "**Result:** Registration failed." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Result:** ${{ needs.register.result }}" >> $GITHUB_STEP_SUMMARY
+          fi

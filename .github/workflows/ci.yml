@@ -1,0 +1,248 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  detect-manifests:
+    name: Detect Manifests
+    runs-on: ubuntu-latest
+
+    outputs:
+      manifests_json: ${{ steps.find.outputs.manifests_json }}
+      manifests_found: ${{ steps.find.outputs.manifests_found }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed files
+        id: changed
+        uses: tj-actions/changed-files@v45
+        with:
+          files: |
+            modules/**
+            scanners/**
+            run-tasks/**
+            chaos-providers/**
+
+      - name: Resolve manifest roots
+        id: find
+        run: |
+          if [ "${{ steps.changed.outputs.any_changed }}" != "true" ]; then
+            echo "manifests_found=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          find_manifest_root() {
+            local dir
+            dir=$(dirname "$1")
+            while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
+              [ -f "$dir/manifest.yaml" ] && echo "$dir" && return 0
+              dir=$(dirname "$dir")
+            done
+            return 1
+          }
+
+          dirs=""
+          orphaned=""
+          for f in ${{ steps.changed.outputs.all_changed_files }}; do
+            if root=$(find_manifest_root "$f"); then
+              dirs="$dirs$root"$'\n'
+            else
+              orphaned="$orphaned$f"$'\n'
+            fi
+          done
+
+          if [ -n "$orphaned" ]; then
+            echo "::error::Files outside any manifest dir (no manifest.yaml ancestor):"
+            echo "$orphaned" | sed '/^$/d' | while read -r f; do echo "  - $f"; done
+            exit 1
+          fi
+
+          unique=$(echo "$dirs" | sort -u | sed '/^$/d')
+          if [ -z "$unique" ]; then
+            echo "manifests_found=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Manifest roots:"
+          echo "$unique"
+
+          json=$(echo "$unique" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "manifests_json=$json" >> $GITHUB_OUTPUT
+          echo "manifests_found=true" >> $GITHUB_OUTPUT
+
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    needs: detect-manifests
+    if: needs.detect-manifests.outputs.manifests_found == 'true'
+
+    strategy:
+      matrix:
+        manifest_dir: ${{ fromJson(needs.detect-manifests.outputs.manifests_json) }}
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Structure check
+        run: |
+          DIR="${{ matrix.manifest_dir }}"
+          [ -f "$DIR/manifest.yaml" ] || { echo "::error::manifest.yaml missing in $DIR"; exit 1; }
+          AXIS=$(echo "$DIR" | cut -d/ -f1)
+          case "$AXIS" in
+            modules)
+              [ -f "$DIR/main.tf" ] || { echo "::error::main.tf missing in $DIR"; exit 1; }
+              ;;
+            scanners|run-tasks|chaos-providers)
+              ;;
+            *)
+              echo "::error::Unknown axis directory: $AXIS"; exit 1 ;;
+          esac
+          echo "Structure valid: $DIR ($AXIS)"
+
+      - name: Manifest envelope check
+        run: |
+          DIR="${{ matrix.manifest_dir }}"
+          YAML="$DIR/manifest.yaml"
+          AXIS=$(echo "$DIR" | cut -d/ -f1)
+          case "$AXIS" in
+            modules)         AXIS_KEY=module ;;
+            scanners)        AXIS_KEY=scanner ;;
+            run-tasks)       AXIS_KEY=run_task ;;
+            chaos-providers) AXIS_KEY=chaos_provider ;;
+          esac
+
+          errors=0
+          for field in apiVersion axis author name version displayName configSchema runtime; do
+            if ! grep -qE "^${field}:" "$YAML"; then
+              echo "::error::Required field '$field' missing in $YAML"
+              errors=$((errors + 1))
+            fi
+          done
+
+          DECLARED_AXIS=$(grep "^axis:" "$YAML" | head -1 | sed 's/^axis:[[:space:]]*//' | tr -d '"' | tr -d "'")
+          if [ "$DECLARED_AXIS" != "$AXIS_KEY" ]; then
+            echo "::error::axis mismatch in $YAML: dir says '$AXIS_KEY', file says '$DECLARED_AXIS'"
+            errors=$((errors + 1))
+          fi
+
+          # Private registries cannot publish lace-managed manifests (ADR 0004).
+          RUNTIME_LOC=$(awk '/^runtime:/{r=1; next} r && /^[a-zA-Z]/{r=0} r && /location:/{print $2; exit}' "$YAML" | tr -d '"' | tr -d "'")
+          if [ "$RUNTIME_LOC" = "lace-managed" ]; then
+            echo "::error::runtime.location: 'lace-managed' is reserved for the public lace-cloud/registry. Private manifests must declare 'customer-hosted'."
+            errors=$((errors + 1))
+          fi
+
+          [ $errors -gt 0 ] && exit 1
+          echo "Envelope valid: $YAML (axis=$AXIS_KEY)"
+
+      - name: Manifest identity uniqueness
+        run: |
+          DIR="${{ matrix.manifest_dir }}"
+          YAML="$DIR/manifest.yaml"
+          AXIS=$(grep "^axis:" "$YAML" | head -1 | sed 's/^axis:[[:space:]]*//' | tr -d '"')
+          AUTHOR=$(grep "^author:" "$YAML" | head -1 | sed 's/^author:[[:space:]]*//' | tr -d '"')
+          NAME=$(grep "^name:" "$YAML" | head -1 | sed 's/^name:[[:space:]]*//' | tr -d '"')
+
+          dupes=""
+          while IFS= read -r f; do
+            other_dir=$(dirname "$f")
+            [ "$other_dir" = "$DIR" ] && continue
+            o_axis=$(grep "^axis:" "$f" | head -1 | sed 's/^axis:[[:space:]]*//' | tr -d '"')
+            o_author=$(grep "^author:" "$f" | head -1 | sed 's/^author:[[:space:]]*//' | tr -d '"')
+            o_name=$(grep "^name:" "$f" | head -1 | sed 's/^name:[[:space:]]*//' | tr -d '"')
+            [ "$o_axis" = "$AXIS" ] && [ "$o_author" = "$AUTHOR" ] && [ "$o_name" = "$NAME" ] \
+              && dupes="$dupes$other_dir"$'\n'
+          done < <(find modules scanners run-tasks chaos-providers -name manifest.yaml -type f 2>/dev/null)
+
+          if [ -n "$dupes" ]; then
+            echo "::error::Duplicate (axis=$AXIS, author=$AUTHOR, name=$NAME) found in:"
+            echo "$dupes" | sed '/^$/d' | while read -r d; do echo "  - $d"; done
+            exit 1
+          fi
+          echo "Identity unique: ($AXIS, $AUTHOR, $NAME)"
+
+      - name: Version bump check
+        run: |
+          DIR="${{ matrix.manifest_dir }}"
+          YAML="$DIR/manifest.yaml"
+          BASE_REF="origin/${{ github.event.pull_request.base.ref }}"
+
+          AXIS=$(grep "^axis:" "$YAML" | head -1 | sed 's/^axis:[[:space:]]*//' | tr -d '"')
+          if [ "$AXIS" = "module" ]; then
+            CONTENT_CHANGES=$(git diff --name-only "$BASE_REF"...HEAD -- "$DIR"/*.tf "$DIR"/**/*.tf 2>/dev/null || true)
+            if [ -z "$CONTENT_CHANGES" ]; then
+              echo "Metadata-only change — skipping version bump check"
+              exit 0
+            fi
+          fi
+
+          CURRENT=$(grep "^version:" "$YAML" | head -1 | sed 's/^version:[[:space:]]*//' | tr -d '"')
+          BASE=$(git show "$BASE_REF:$YAML" 2>/dev/null \
+            | grep "^version:" | head -1 | sed 's/^version:[[:space:]]*//' | tr -d '"' || echo "")
+          if [ -z "$BASE" ]; then
+            echo "New manifest — skipping version bump check"
+          elif [ "$CURRENT" = "$BASE" ]; then
+            echo "::error::Version not bumped ($CURRENT). Update version in $YAML."
+            exit 1
+          else
+            echo "Version bumped: $BASE -> $CURRENT"
+          fi
+
+      - uses: hashicorp/setup-terraform@v3
+        if: startsWith(matrix.manifest_dir, 'modules/')
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Terraform format check
+        if: startsWith(matrix.manifest_dir, 'modules/')
+        run: terraform fmt -check -recursive "${{ matrix.manifest_dir }}"
+
+      - name: Terraform validate
+        if: startsWith(matrix.manifest_dir, 'modules/')
+        run: |
+          cd "${{ matrix.manifest_dir }}"
+          terraform init -backend=false
+          terraform validate
+
+  summary:
+    name: Summary
+    runs-on: ubuntu-latest
+    needs: [detect-manifests, validate]
+    if: always()
+
+    steps:
+      - name: Report
+        run: |
+          echo "# Manifest Validation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.detect-manifests.outputs.manifests_found }}" != "true" ]; then
+            echo "No manifest changes detected." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          echo "## Manifests" >> $GITHUB_STEP_SUMMARY
+          echo '${{ needs.detect-manifests.outputs.manifests_json }}' \
+            | jq -r '.[] | "- `" + . + "`"' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.validate.result }}" = "success" ]; then
+            echo "**Result:** All manifests passed validation." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Result:** Validation failed." >> $GITHUB_STEP_SUMMARY
+          fi
