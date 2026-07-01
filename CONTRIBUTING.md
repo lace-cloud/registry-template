@@ -44,12 +44,31 @@ The deep validation runs server-side. The CI envelope check is fail-fast.
 - `axis: module`. `runtime.location: customer-hosted` is the only valid runtime for private modules (ADR 0004).
 - `main.tf` exists. `terraform fmt -check` passes. `terraform validate` passes after `terraform init -backend=false`.
 - `version` bumped on any `*.tf` change.
-- `bundle.modulePath` is the path under the repo root.
+- A `bundle:` block is **required**. Its fields:
+
+  | Field | Required | Type | Meaning |
+  |---|---|---|---|
+  | `bundle.system` | **yes** | string (1–32) | Cloud/IaC system tag — `aws`, `gcp`, `cloudflare`, `docker`, … |
+  | `bundle.gitUrl` | **yes** | URL (≤512) | Fetchable source git URL. Terraform fetches the module from here; inline HCL alone is not enough, so a `/source` read fails with HTTP 400 when it's absent. |
+  | `bundle.modulePath` | **yes** | string (1–512) | Path to the module under the repo root (e.g. `modules/aws/internal-vpc`). |
+  | `bundle.commitSha` | no | string (7–64) | Source commit pin. |
+  | `bundle.gitTag` | no | string (1–128) | Source tag pin. |
+
+  Example:
+
+  ```yaml
+  bundle:
+    system: aws
+    gitUrl: https://github.com/acme-corp/lace-registry.git
+    modulePath: modules/acme/internal-vpc
+    commitSha: '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b'
+  ```
 
 ### `scanners/`
 
 - `axis: scanner`. Customer-hosted: `runtime: { location: customer-hosted, dispatch: lace-pull, oidcTrust: { issuer, audience } }` (Lace dispatches HTTPS to your endpoint with an OIDC-signed JWT) **or** `runtime: { location: customer-hosted, dispatch: customer-push, scopeRequired: <scope> }` (your endpoint POSTs results to Lace).
 - `outputs` declares ≥ 1 of `findings | snapshots | time_series | inventory` with sub-kind schemas.
+- `defaultIntervalSeconds` (optional, positive integer) sets the default scan cadence in seconds. When an install omits it, the scheduler falls back to the 300s floor — set it so an admin who installs without overriding gets a fire-able install instead of a silent never-fires row. It is clamped to `[300, 86400]` (5 min – 24 h) at schedule time. An install may override per-install via `configJson.intervalSeconds` (same clamp applies).
 
 ### `run-tasks/`
 
