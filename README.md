@@ -1,6 +1,6 @@
 # registry-template
 
-Starter template for an org-private Lace registry monorepo. Clone this template, point it at your org's Lace cloud, and your platform team can author internal Terraform modules, scanners, run-tasks, and chaos providers under PR review — same shape as the public `lace-cloud/registry` monorepo.
+Starter template for an org-private Lace registry monorepo. Clone this template, point it at your org's Lace cloud, and your platform team can author internal Terraform modules, handlers, scanners, and agents under PR review — same shape as the public `lace-cloud/registry` monorepo.
 
 ## Quickstart
 
@@ -34,9 +34,9 @@ Edit `.github/CODEOWNERS` so PRs are reviewed by the right team:
 ```
 *                            @acme-corp/platform-team
 modules/                     @acme-corp/platform-team
+handlers/acme/               @acme-corp/platform-team
 scanners/acme/               @acme-corp/platform-team
-run-tasks/acme/              @acme-corp/platform-team
-chaos-providers/acme/        @acme-corp/platform-team
+agents/acme/                 @acme-corp/platform-team
 ```
 
 ### 5. Author manifests
@@ -45,9 +45,9 @@ Drop manifests under the appropriate axis subdir. Each manifest follows the stan
 
 ```
 modules/acme/internal-vpc/{manifest.yaml, main.tf, ...}
+handlers/acme/policy-gate/{manifest.yaml, README.md}
 scanners/acme/sox-compliance/{manifest.yaml, README.md}
-run-tasks/acme/dlq-gate/{manifest.yaml, README.md}
-chaos-providers/acme/wiz/{manifest.yaml, README.md}
+agents/acme/cost-whisperer/{manifest.yaml, README.md}
 ```
 
 Open a PR; CI validates the envelope. On merge to `main`, `publish.yml` calls `lace registry register --axis <axis> --manifest <path>` against `https://api.lace.cloud/api/v1/registry/index`. The endpoint clamps `org_id` to your org based on the service token's scope; manifests are visible only to your org's catalog browse.
@@ -64,9 +64,9 @@ Open a PR; CI validates the envelope. On merge to `main`, `publish.yml` calls `l
 │       ├── ci.yml                  ← PR gate
 │       └── publish.yml             ← push to main → register
 ├── modules/                        ← Terraform modules (with .tf files)
+├── handlers/                       ← Handler integrations (Run-lifecycle gates, routers, notifiers)
 ├── scanners/                       ← Observatory scanners
-├── run-tasks/                      ← run-task hooks
-└── chaos-providers/                ← chaos engineering providers
+└── agents/                         ← Advisory-by-emission agents
 ```
 
 The four axis subdirs ship empty (`.gitkeep`). Add `<author>/<name>/manifest.yaml` per the envelope.
@@ -93,18 +93,18 @@ The Lace cloud handles the `org_id` clamp server-side based on the bearer token'
 
 `feature/* → develop → main`. Push to `main` triggers `publish.yml`. Customize protection rules to taste.
 
-## ADR 0004: in-tree handlers are Lace-eng only
+## ADR 0004: in-tree handlers and agents are Lace-eng only
 
 Customer-authored manifests (public *or* private) must declare:
 
 ```yaml
 runtime:
   location: customer-hosted
-  dispatch: lace-pull | customer-push
+  dispatch: lace-pull | customer-push | customer-poll
   ...
 ```
 
-`runtime: { location: lace-managed }` is reserved for `author: lace` manifests in the public registry — those manifests' handler code ships in Lace's tree. Your private manifests will be rejected at publish time if they try to declare `lace-managed`.
+`runtime: { location: lace-managed }` is reserved for `author: lace` manifests in the public registry — those manifests' handler/agent code ships in Lace's tree. Your private manifests will be rejected at publish time if they try to declare `lace-managed`.
 
 ## Troubleshooting
 

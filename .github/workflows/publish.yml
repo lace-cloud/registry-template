@@ -5,9 +5,9 @@ on:
     branches: [main]
     paths:
       - 'modules/**'
+      - 'handlers/**'
       - 'scanners/**'
-      - 'run-tasks/**'
-      - 'chaos-providers/**'
+      - 'agents/**'
   workflow_dispatch:
     inputs:
       manifest_dir:
@@ -50,7 +50,7 @@ jobs:
           fi
 
           changed=$(git diff --name-only --diff-filter=AM HEAD^ HEAD \
-            | grep -E '^(modules|scanners|run-tasks|chaos-providers)/' || true)
+            | grep -E '^(modules|handlers|scanners|agents)/' || true)
           if [ -z "$changed" ]; then
             echo "No manifest changes detected"
             echo "manifests_found=false" >> $GITHUB_OUTPUT
@@ -117,11 +117,11 @@ jobs:
           DIR="${{ matrix.manifest_dir }}"
           AXIS_DIR=$(echo "$DIR" | cut -d/ -f1)
           case "$AXIS_DIR" in
-            modules)         AXIS=module ;;
-            scanners)        AXIS=scanner ;;
-            run-tasks)       AXIS=run_task ;;
-            chaos-providers) AXIS=chaos_provider ;;
-            *)               echo "::error::Unknown axis dir: $AXIS_DIR"; exit 1 ;;
+            modules)  AXIS=module ;;
+            handlers) AXIS=handler ;;
+            scanners) AXIS=scanner ;;
+            agents)   AXIS=agent ;;
+            *)        echo "::error::Unknown axis dir: $AXIS_DIR"; exit 1 ;;
           esac
           echo "axis=$AXIS" >> $GITHUB_OUTPUT
 

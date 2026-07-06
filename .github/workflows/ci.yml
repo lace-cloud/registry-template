@@ -31,9 +31,9 @@ jobs:
         with:
           files: |
             modules/**
+            handlers/**
             scanners/**
-            run-tasks/**
-            chaos-providers/**
+            agents/**
 
       - name: Resolve manifest roots
         id: find
@@ -107,7 +107,7 @@ jobs:
             modules)
               [ -f "$DIR/main.tf" ] || { echo "::error::main.tf missing in $DIR"; exit 1; }
               ;;
-            scanners|run-tasks|chaos-providers)
+            handlers|scanners|agents)
               ;;
             *)
               echo "::error::Unknown axis directory: $AXIS"; exit 1 ;;
@@ -120,10 +120,10 @@ jobs:
           YAML="$DIR/manifest.yaml"
           AXIS=$(echo "$DIR" | cut -d/ -f1)
           case "$AXIS" in
-            modules)         AXIS_KEY=module ;;
-            scanners)        AXIS_KEY=scanner ;;
-            run-tasks)       AXIS_KEY=run_task ;;
-            chaos-providers) AXIS_KEY=chaos_provider ;;
+            modules)  AXIS_KEY=module ;;
+            handlers) AXIS_KEY=handler ;;
+            scanners) AXIS_KEY=scanner ;;
+            agents)   AXIS_KEY=agent ;;
           esac
 
           errors=0
@@ -167,7 +167,7 @@ jobs:
             o_name=$(grep "^name:" "$f" | head -1 | sed 's/^name:[[:space:]]*//' | tr -d '"')
             [ "$o_axis" = "$AXIS" ] && [ "$o_author" = "$AUTHOR" ] && [ "$o_name" = "$NAME" ] \
               && dupes="$dupes$other_dir"$'\n'
-          done < <(find modules scanners run-tasks chaos-providers -name manifest.yaml -type f 2>/dev/null)
+          done < <(find modules handlers scanners agents -name manifest.yaml -type f 2>/dev/null)
 
           if [ -n "$dupes" ]; then
             echo "::error::Duplicate (axis=$AXIS, author=$AUTHOR, name=$NAME) found in:"

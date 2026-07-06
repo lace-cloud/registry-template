@@ -3,7 +3,7 @@
 
 *                            @your-org/your-team
 /modules/                    @your-org/your-team
+/handlers/                   @your-org/your-team
 /scanners/                   @your-org/your-team
-/run-tasks/                  @your-org/your-team
-/chaos-providers/            @your-org/your-team
+/agents/                     @your-org/your-team
 /.github/                    @your-org/your-team
