@@ -140,10 +140,39 @@ jobs:
             errors=$((errors + 1))
           fi
 
-          # Private registries cannot publish lace-managed manifests (ADR 0004).
+          # runtime.location is a closed enum: 'in-tree' | 'external'.
+          # ADR 0004: 'in-tree' requires author='lace' AND public visibility,
+          # so an org-private manifest can never declare it. The module axis is
+          # exempt — for a module, 'in-tree' just means "applied by the Lace
+          # runner", which carries no handler-dispatch authority.
           RUNTIME_LOC=$(awk '/^runtime:/{r=1; next} r && /^[a-zA-Z]/{r=0} r && /location:/{print $2; exit}' "$YAML" | tr -d '"' | tr -d "'")
-          if [ "$RUNTIME_LOC" = "lace-managed" ]; then
-            echo "::error::runtime.location: 'lace-managed' is reserved for the public lace-cloud/registry. Private manifests must declare 'customer-hosted'."
+          case "$RUNTIME_LOC" in
+            lace-managed|customer-hosted)
+              echo "::error::runtime.location: '$RUNTIME_LOC' is a retired value and no longer validates. Use 'external' (or 'in-tree' for modules applied by the Lace runner)."
+              errors=$((errors + 1))
+              ;;
+            in-tree)
+              if [ "$AXIS_KEY" != "module" ]; then
+                echo "::error::runtime.location: 'in-tree' is reserved for author='lace' manifests in the public lace-cloud/registry (ADR 0004). This manifest must declare 'external'."
+                errors=$((errors + 1))
+              fi
+              ;;
+            external)
+              ;;
+            "")
+              echo "::error::runtime.location is missing in $YAML. Declare 'external' (or 'in-tree' for modules)."
+              errors=$((errors + 1))
+              ;;
+            *)
+              echo "::error::runtime.location: '$RUNTIME_LOC' is not a valid value. Must be 'external' or 'in-tree'."
+              errors=$((errors + 1))
+              ;;
+          esac
+
+          # Agents emit an Advisory at one of the four Manifestations. The
+          # legacy 2-persona 'emits.surface' is rejected by the publish schema.
+          if [ "$AXIS_KEY" = "agent" ] && grep -qE "^[[:space:]]+surface:" "$YAML"; then
+            echo "::error::agent manifests must declare 'emits.manifestation' (preview|draft|triage|trace). The legacy 'emits.surface' is rejected at publish."
             errors=$((errors + 1))
           fi
 
