@@ -141,7 +141,7 @@ jobs:
           fi
 
           # runtime.location is a closed enum: 'in-tree' | 'external'.
-          # ADR 0004: 'in-tree' requires author='lace' AND public visibility,
+          # 'in-tree' requires author='lace' AND public visibility,
           # so an org-private manifest can never declare it. The module axis is
           # exempt — for a module, 'in-tree' just means "applied by the Lace
           # runner", which carries no handler-dispatch authority.
@@ -153,7 +153,7 @@ jobs:
               ;;
             in-tree)
               if [ "$AXIS_KEY" != "module" ]; then
-                echo "::error::runtime.location: 'in-tree' is reserved for author='lace' manifests in the public lace-cloud/registry (ADR 0004). This manifest must declare 'external'."
+                echo "::error::runtime.location: 'in-tree' is reserved for author='lace' manifests in the public lace-cloud/registry. This manifest must declare 'external'."
                 errors=$((errors + 1))
               fi
               ;;

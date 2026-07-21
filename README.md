@@ -104,7 +104,7 @@ The Lace cloud handles the `org_id` clamp server-side based on the bearer token'
 
 `feature/* → develop → main`. Push to `main` triggers `publish.yml`. Customize protection rules to taste.
 
-## ADR 0004: in-tree dispatch is Lace-eng only
+## In-tree dispatch is Lace-authored only
 
 `runtime.location` has exactly two values — `in-tree` and `external`. Handler, scanner, and agent manifests you publish from this repo must declare:
 
@@ -135,9 +135,18 @@ An org-scoped token may only publish under its own namespace. Set the manifest's
 
 Manifests are immutable per `(axis, author, name, version)`. Bump the `version` field and reopen the PR.
 
-### CI envelope check passes but publish fails with a zod error
+### CI envelope check passes but publish fails with a validation error
 
-The CI's envelope check is fail-fast; the API runs the full per-axis zod (in `apps/api/src/lib/registry/axes/` of the lace monorepo) at publish time. Read the API error message for the field path that failed.
+The CI check in this repo is deliberately shallow and fail-fast — it verifies the envelope fields, the axis/directory agreement, and a few values known to be retired. The authoritative per-axis validation runs server-side at publish time and is stricter in two ways worth knowing:
+
+- **Schemas are strict.** An unrecognized key is an error, not a warning. A plausible-looking field that isn't in the schema fails the publish.
+- **The error names the field path.** Read the `path` in the API response first — it points at the exact key, which is usually faster than re-reading the manifest.
+
+For the current accepted shape of any axis, the published manifests in the public registry at [`lace-cloud/registry`](https://github.com/lace-cloud/registry) are working examples of every axis. `lace registry register` also prints the full validation error, so running it locally against your manifest is the fastest way to iterate.
+
+### `422: binding an external agent whose read scope exceeds its bind scope requires explicit egress acknowledgement`
+
+Not a publish error — an *install* error your users will hit. The agent's manifest declares a `reads.scope` broader than the scope the admin is binding at, so the binding needs an explicit egress acknowledgement. Either the admin re-binds at a broader scope or acknowledges, or you narrow `reads.scope` in the manifest. See [CONTRIBUTING.md](./CONTRIBUTING.md#egress-consent-readsscope-decides-how-hard-your-artifact-is-to-install).
 
 ## Get help
 

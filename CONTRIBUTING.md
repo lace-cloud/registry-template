@@ -30,7 +30,7 @@ description: "..."
 categories: [networking, internal]
 configSchema: { ... }              # JSON-Schema for per-install config
 runtime:
-  location: external               # 'in-tree' is Lace-eng only (ADR 0004)
+  location: external               # 'in-tree' is Lace-authored + public only
   dispatch: lace-pull | customer-push | customer-poll
   ...
 authors: ["Acme Platform <platform@acme.example>"]
@@ -45,7 +45,7 @@ The deep validation runs server-side. The CI envelope check is fail-fast.
 
 | `location` | `dispatch` | Additional fields | Who may publish |
 |---|---|---|---|
-| `in-tree` | *(none)* | `handlerId` | `author: lace`, public only (ADR 0004) — **modules exempt** |
+| `in-tree` | *(none)* | `handlerId` | `author: lace` **and** public only — **modules exempt** |
 | `external` | `lace-pull` | `webhookUrl?`, `audienceFormat?`, `oidcTrust?`, `configRequires` | anyone |
 | `external` | `customer-push` | `scopeRequired` | anyone |
 | `external` | `customer-poll` | `queueScope`, `pollScopeRequired`, `pollWaitSeconds` | anyone |
@@ -58,7 +58,7 @@ Everything you publish from this repo is org-private, so **every non-module mani
 
 ### `modules/`
 
-- `axis: module`. Modules may declare `runtime.location: in-tree` (Terraform applied by the Lace runner — the universal case) or `external`. **The module axis is exempt from the ADR 0004 authorship gate:** that gate guards in-tree *handler dispatch*, which modules do not carry, so your org may publish `in-tree` modules.
+- `axis: module`. Modules may declare `runtime.location: in-tree` (Terraform applied by the Lace runner — the universal case) or `external`. **Modules are the one axis exempt from the `author: lace` restriction on `in-tree`:** that restriction guards in-tree *handler dispatch*, which the module axis does not carry, so your org may publish `in-tree` modules.
 - `main.tf` exists. `terraform fmt -check` passes. `terraform validate` passes after `terraform init -backend=false`.
 - `version` bumped on any `*.tf` change.
 - A `bundle:` block is **required**. Its fields:
@@ -88,7 +88,7 @@ A Handler is the universal verdict producer: it subscribes to Run-lifecycle hook
 - `axis: handler`. `runtime.location: external` (org-private manifests cannot be `in-tree`).
 - `hooks.available` ⊆ {`pre_plan`, `post_plan`, `pre_apply`, `post_apply`, `post_destroy`}, ≥ 1 entry. `hooks.default` ⊆ `hooks.available`.
   - Only `pre_apply` **gates** a Run. The other four are observed-only and never back-pressure — the portal badges them "observing-only". Do not ship a handler that expects `post_plan` to block.
-- `endpointSource` ∈ {`manifest`, `install`}. `in_tree` is reserved for `author: lace` in the public registry (ADR 0004) and additionally requires `runtime.location: in-tree`, a `runtime.handlerId`, and `signing.kind: none`.
+- `endpointSource` ∈ {`manifest`, `install`}. `in_tree` is reserved for `author: lace` in the public registry and additionally requires `runtime.location: in-tree`, a `runtime.handlerId`, and `signing.kind: none`.
   - `manifest`: declare `endpointUrl` (one URL every install dispatches to). Required for this mode.
   - `install`: omit `endpointUrl` — each org supplies its own at install time. Declaring both is rejected.
 - `signing`: `{ kind: hmac_sha256, headerName?: <header> }` for any handler carrying secrets, or `{ kind: none }`. `headerName` defaults to `X-Lace-Handler-Signature`.
@@ -128,6 +128,30 @@ An Agent is the model's fourth artifact: **advisory-by-emission**. It reads a ti
 - `runtime.dispatch` must be `lace-pull` or `customer-poll`. `customer-push` is invalid for agents — that is the handler async verdict-return path, and agents do not return verdicts.
 - For `customer-poll`, `runtime.pollScopeRequired` must be exactly `agents:poll` (the first-class mintable scope). Any other string is unmintable, so the poller could never obtain a usable token.
 
+## Egress consent: `reads.scope` decides how hard your artifact is to install
+
+**Read this before picking `reads.scope`.** An artifact with `runtime.location: external` runs outside Lace, so dispatching to it sends org-internal timeline context off-platform. The platform gates that with a per-binding consent check — and the scope you declare in the manifest determines whether the admins installing your artifact sail through or hit a wall.
+
+Everything published from this repo is org-private, which the platform derives as `ownership: self`. For `self`, the rule is:
+
+> **Explicit acknowledgement is required only when `reads.scope` is *broader* than the scope the admin binds at.**
+
+Scopes rank `stack` (narrowest) < `team` < `org` (broadest). Reading *narrower* than the bind scope is always fine.
+
+| Declared `reads.scope` | Bound at `stack` | Bound at `team` | Bound at `org` |
+|---|---|---|---|
+| `stack` | implicit | implicit | implicit |
+| `team` | **explicit ack** | implicit | implicit |
+| `org` | **explicit ack** | **explicit ack** | implicit |
+
+When an ack is required and the caller doesn't pass one, binding fails with HTTP 422 `egress_consent_required`. The consent is recorded on the binding either way, and at dispatch the agent's read token is minted bounded to exactly the consented scope — so declaring a broad scope does not quietly grant a broad read; it just moves the friction to install time.
+
+**Practical guidance:** declare the *narrowest* `reads.scope` your agent actually needs. Declaring `org` "to be safe" is the opposite of safe — it forces an explicit acknowledgement on every binding that isn't already org-wide, and it is the single most common reason an otherwise-correct agent is painful to adopt.
+
+> Two related notes. **Vendor-published (public) external artifacts always require explicit ack**, regardless of scope — that path doesn't apply to this repo, but it's why you'll see the prompt on public catalog artifacts. And **modules are exempt entirely**: a module binds in-code with no endpoint, so there is nothing to egress to.
+>
+> Today this gate is enforced for external **agents**. Handlers and scanners are covered by the same governance model and inherit it as their external-observe dispatch path lands, so design your read surface as if it already applies.
+
 ## Review checklist
 
 For every PR:
@@ -140,6 +164,7 @@ For every PR:
 - [ ] Per-axis fields conform to the schema referenced above.
 - [ ] `README.md` exists alongside `manifest.yaml` and explains usage.
 - [ ] Modules: `terraform fmt -check` + `terraform init -backend=false && terraform validate` pass.
+- [ ] External agents: `reads.scope` is the narrowest scope that actually works — a broader scope forces an explicit egress acknowledgement on every narrower binding.
 - [ ] No secrets, credentials, or production data in any manifest or README.
 
 ## Manifest immutability
