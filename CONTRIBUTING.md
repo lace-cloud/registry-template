@@ -110,13 +110,29 @@ A Handler is the universal verdict producer: it subscribes to Run-lifecycle hook
 An Agent is the model's fourth artifact: **advisory-by-emission**. It reads a timeline producer and writes an Advisory. It never returns a Verdict and never gates a Run — so agent manifests carry no `endpointSource`, `signing`, `verdictMode`, or `timeoutSeconds`, and agent bindings have no `mode`.
 
 - `axis: agent`. `runtime.location: external` (org-private manifests cannot be `in-tree`).
-- `trigger` declares the timeline producer the agent reads and the hooks it subscribes to:
-  - `trigger.producer` ∈ {`run`, `handler`, `scanner`, `agent`}.
-  - For `producer: run`, `trigger.hooks.available` ⊆ {`pre_plan`, `post_plan`, `pre_apply`, `post_apply`, `post_destroy`} and must be non-empty. `trigger.hooks.default` ⊆ `trigger.hooks.available`.
-  - For any other producer, `trigger.hooks.available` is empty (the agent fires on the Event itself, filtered by payload).
-- `emits.manifestation` ∈ {`preview`, `draft`, `triage`, `trace`} — the platform-fixed render surface the Advisory appears at. Pick exactly one.
+#### `trigger` and `emits` are one decision, not two
+
+There are exactly four Manifestations, they are not customer-extensible, and **each one's triggering Interaction is platform-fixed**. So choosing where your Advisory renders also determines what your agent may trigger on. Pick the row, then fill in both columns from it:
+
+| `emits.manifestation` | The Interaction it renders at | Matching `trigger` |
+|---|---|---|
+| `preview` | An Actor composing a plan (pre-Run-submission) | `producer: run`, hooks `[post_plan]` |
+| `draft` | An Actor opening a fresh Handler form | `producer: handler` |
+| `triage` | A new Finding lands | `producer: scanner` |
+| `trace` | An incident is declared | `producer: agent` |
+
+⚠️ **The schema does not currently enforce this pairing** — it validates `trigger` and `emits` independently, so a manifest declaring `producer: run` + `manifestation: trace` will publish successfully and then render an Advisory about a plan onto the incident-investigation surface, where it is noise. Treat the table as the contract regardless. The four moments are fixed because each answers a question specific to that moment; an Advisory that arrives at the wrong one has no audience.
+
+Mechanics, once you've picked the row:
+
+- `trigger.producer` ∈ {`run`, `handler`, `scanner`, `agent`}.
+- For `producer: run`, `trigger.hooks.available` ⊆ {`pre_plan`, `post_plan`, `pre_apply`, `post_apply`, `post_destroy`} and must be non-empty. `trigger.hooks.default` ⊆ `trigger.hooks.available`.
+- For any other producer, `trigger.hooks.available` is empty — lifecycle hooks exist only on the `run` producer; the agent fires on the Event itself, filtered by payload.
+- `emits.manifestation` takes exactly one of the four values.
 
   > **Breaking change.** The 2-persona `emits.surface` (`whisperer` | `triage`) is **rejected at publish** — the schema is strict. It survives only on the read/callback path so live agents mid-migration aren't 400'd, mapped `whisperer → preview`, `triage → triage`. New manifests must use `emits.manifestation`.
+
+**A Manifestation holds many Advisories.** Binding your agent to a surface does not claim it — several agents may render at the same Manifestation and scope. The surface presents them as a ranked queue, each attributed to its emitting install, deduplicated where two Advisories declare the same normalized subject, and confidence-gated. That curation is display-only: every Advisory stays on the timeline in full, even when it doesn't make the view. Write your Advisory to stand on its own rather than assuming it is the only one shown.
 
 - External agents MUST declare a `reads` descriptor for egress governance — an agent with no `reads` would silently bypass consent at bind time:
   ```yaml
@@ -165,6 +181,7 @@ For every PR:
 - [ ] `README.md` exists alongside `manifest.yaml` and explains usage.
 - [ ] Modules: `terraform fmt -check` + `terraform init -backend=false && terraform validate` pass.
 - [ ] External agents: `reads.scope` is the narrowest scope that actually works — a broader scope forces an explicit egress acknowledgement on every narrower binding.
+- [ ] Agents: `trigger` matches the Interaction that `emits.manifestation` renders at (see the pairing table). The schema does not check this.
 - [ ] No secrets, credentials, or production data in any manifest or README.
 
 ## Manifest immutability
