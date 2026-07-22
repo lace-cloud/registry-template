@@ -71,7 +71,7 @@ Open a PR; CI validates the envelope. On merge to `main`, `publish.yml` calls `l
 └── agents/                         ← Advisory-by-emission agents
 ```
 
-The four axis subdirs ship empty (`.gitkeep`). Add `<author>/<name>/manifest.yaml` per the envelope.
+Each axis subdir ships with a `README.md` placeholder that documents what goes there and keeps the directory in git. Add `<author>/<name>/manifest.yaml` per the envelope.
 
 These four axes are the concept model's four artifacts, and the set is closed — the API validates `axis` against a fixed enum:
 

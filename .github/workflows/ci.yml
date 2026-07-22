@@ -34,6 +34,15 @@ jobs:
             handlers/**
             scanners/**
             agents/**
+          # Axis-dir scaffolding is not manifest content and must not enter
+          # manifest detection: the per-axis README that documents each
+          # directory, plus any .gitkeep a fork might use to hold an empty dir.
+          files_ignore: |
+            **/.gitkeep
+            modules/README.md
+            handlers/README.md
+            scanners/README.md
+            agents/README.md
 
       - name: Resolve manifest roots
         id: find
