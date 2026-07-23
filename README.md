@@ -1,6 +1,6 @@
 # registry-template
 
-Starter template for an org-private Lace registry monorepo. Clone this template, point it at your org's Lace cloud, and your platform team can author internal Terraform modules, scanners, run-tasks, and chaos providers under PR review — same shape as the public `lace-cloud/registry` monorepo.
+Starter template for an org-private Lace registry monorepo. Clone this template, point it at your org's Lace cloud, and your platform team can author internal Terraform modules, handlers, scanners, and agents under PR review — same shape as the public `lace-cloud/registry` monorepo.
 
 ## Quickstart
 
@@ -34,9 +34,9 @@ Edit `.github/CODEOWNERS` so PRs are reviewed by the right team:
 ```
 *                            @acme-corp/platform-team
 modules/                     @acme-corp/platform-team
+handlers/acme/               @acme-corp/platform-team
 scanners/acme/               @acme-corp/platform-team
-run-tasks/acme/              @acme-corp/platform-team
-chaos-providers/acme/        @acme-corp/platform-team
+agents/acme/                 @acme-corp/platform-team
 ```
 
 ### 5. Author manifests
@@ -45,10 +45,12 @@ Drop manifests under the appropriate axis subdir. Each manifest follows the stan
 
 ```
 modules/acme/internal-vpc/{manifest.yaml, main.tf, ...}
+handlers/acme/policy-gate/{manifest.yaml, README.md}
 scanners/acme/sox-compliance/{manifest.yaml, README.md}
-run-tasks/acme/dlq-gate/{manifest.yaml, README.md}
-chaos-providers/acme/wiz/{manifest.yaml, README.md}
+agents/acme/cost-advisor/{manifest.yaml, README.md}
 ```
+
+The `<author>` segment (`acme` above) must be your **org slug** exactly — an org-scoped token cannot publish a foreign namespace. See [CONTRIBUTING.md](./CONTRIBUTING.md#folder-shape).
 
 Open a PR; CI validates the envelope. On merge to `main`, `publish.yml` calls `lace registry register --axis <axis> --manifest <path>` against `https://api.lace.cloud/api/v1/registry/index`. The endpoint clamps `org_id` to your org based on the service token's scope; manifests are visible only to your org's catalog browse.
 
@@ -64,12 +66,21 @@ Open a PR; CI validates the envelope. On merge to `main`, `publish.yml` calls `l
 │       ├── ci.yml                  ← PR gate
 │       └── publish.yml             ← push to main → register
 ├── modules/                        ← Terraform modules (with .tf files)
+├── handlers/                       ← Handler integrations (Run-lifecycle gates, routers, notifiers)
 ├── scanners/                       ← Observatory scanners
-├── run-tasks/                      ← run-task hooks
-└── chaos-providers/                ← chaos engineering providers
+└── agents/                         ← Advisory-by-emission agents
 ```
 
-The four axis subdirs ship empty (`.gitkeep`). Add `<author>/<name>/manifest.yaml` per the envelope.
+Each axis subdir ships with a `README.md` placeholder that documents what goes there and keeps the directory in git. Add `<author>/<name>/manifest.yaml` per the envelope.
+
+These four axes are the concept model's four artifacts, and the set is closed — the API validates `axis` against a fixed enum:
+
+| Axis | Role on the timeline |
+|---|---|
+| `module` | Terraform the runner applies — the **desired state** an artifact contributes. |
+| `handler` | Subscribes to Run-lifecycle hooks and returns a **Verdict**. Only `pre_apply` gates; every other hook is observing-only. |
+| `scanner` | Produces **Findings / snapshots / time-series / inventory** on a cadence, into the Observatory. |
+| `agent` | Reads a producer and emits an **Advisory**. Never returns a verdict, never gates. |
 
 ## How it relates to the public registry
 
@@ -83,7 +94,7 @@ The only differences:
 
 | | **Public registry** (`lace-cloud/registry`) | **Your private registry** |
 |---|---|---|
-| API key scope | `REGISTRY_PUBLISH` | `REGISTRY_PUBLISH:org` |
+| API key scope | `registry:publish` | `registry:publish:org` |
 | Resulting `org_id` | `NULL` (visible to all orgs) | your org (visible only to your org) |
 | Reviewers | `@lace-cloud/platform-team` | whoever you put in CODEOWNERS |
 
@@ -93,32 +104,49 @@ The Lace cloud handles the `org_id` clamp server-side based on the bearer token'
 
 `feature/* → develop → main`. Push to `main` triggers `publish.yml`. Customize protection rules to taste.
 
-## ADR 0004: in-tree handlers are Lace-eng only
+## In-tree dispatch is Lace-authored only
 
-Customer-authored manifests (public *or* private) must declare:
+`runtime.location` has exactly two values — `in-tree` and `external`. Handler, scanner, and agent manifests you publish from this repo must declare:
 
 ```yaml
 runtime:
-  location: customer-hosted
-  dispatch: lace-pull | customer-push
+  location: external
+  dispatch: lace-pull | customer-push | customer-poll
   ...
 ```
 
-`runtime: { location: lace-managed }` is reserved for `author: lace` manifests in the public registry — those manifests' handler code ships in Lace's tree. Your private manifests will be rejected at publish time if they try to declare `lace-managed`.
+`runtime: { location: in-tree }` means the artifact's code ships inside Lace's own tree, resolved through a compile-time `IN_TREE_*` map. It requires **both** `author: lace` **and** public visibility (`org_id IS NULL`), so a manifest published from this repo is rejected at publish time (HTTP 422) if it declares `in-tree`.
+
+**Modules are exempt.** The gate guards in-tree *handler dispatch*, a concept the module axis does not carry — for a module, `in-tree` just means "Terraform applied by the Lace runner", which is the normal case for everyone's modules, including yours.
+
+> `location: customer-hosted` and `location: lace-managed` are the retired spelling and no longer validate. Use `external` and `in-tree`.
 
 ## Troubleshooting
 
 ### `403: REGISTRY_PUBLISH_ORG requires an org-bound service token`
 
-Your `LACE_REGISTRY_KEY` is missing the `REGISTRY_PUBLISH:org` scope or is not bound to an org. Re-issue from the portal.
+Your `LACE_REGISTRY_KEY` is missing the `registry:publish:org` scope or is not bound to an org. Re-issue from the portal.
+
+### `403: Cannot publish under author "X" from org "Y" — author must match the org slug`
+
+An org-scoped token may only publish under its own namespace. Set the manifest's `author` to your org slug exactly — team-internal namespaces (`acme-platform`) are rejected. Carve out team scope in `name` instead.
 
 ### `409: manifest at this version already published with different content`
 
 Manifests are immutable per `(axis, author, name, version)`. Bump the `version` field and reopen the PR.
 
-### CI envelope check passes but publish fails with a zod error
+### CI envelope check passes but publish fails with a validation error
 
-The CI's envelope check is fail-fast; the API runs the full per-axis zod (in `apps/api/src/lib/registry/axes/` of the lace monorepo) at publish time. Read the API error message for the field path that failed.
+The CI check in this repo is deliberately shallow and fail-fast — it verifies the envelope fields, the axis/directory agreement, and a few values known to be retired. The authoritative per-axis validation runs server-side at publish time and is stricter in two ways worth knowing:
+
+- **Schemas are strict.** An unrecognized key is an error, not a warning. A plausible-looking field that isn't in the schema fails the publish.
+- **The error names the field path.** Read the `path` in the API response first — it points at the exact key, which is usually faster than re-reading the manifest.
+
+For the current accepted shape of any axis, the published manifests in the public registry at [`lace-cloud/registry`](https://github.com/lace-cloud/registry) are working examples of every axis. `lace registry register` also prints the full validation error, so running it locally against your manifest is the fastest way to iterate.
+
+### `422: binding an external agent whose read scope exceeds its bind scope requires explicit egress acknowledgement`
+
+Not a publish error — an *install* error your users will hit. The agent's manifest declares a `reads.scope` broader than the scope the admin is binding at, so the binding needs an explicit egress acknowledgement. Either the admin re-binds at a broader scope or acknowledges, or you narrow `reads.scope` in the manifest. See [CONTRIBUTING.md](./CONTRIBUTING.md#egress-consent-readsscope-decides-how-hard-your-artifact-is-to-install).
 
 ## Get help
 
