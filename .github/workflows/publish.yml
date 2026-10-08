@@ -21,6 +21,7 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write   # a module publish is verified by GitHub's OIDC token
 
 jobs:
   prepare:
@@ -99,16 +100,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Lace CLI
-        run: |
-          wget -q https://releases.lace.cloud/lace-cli-linux-amd64 -O lace
-          chmod +x lace && sudo mv lace /usr/local/bin/lace
+      - name: Install minisign
+        # install.sh verifies the download's signature and refuses without minisign.
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
+      - name: Install Lace CLI (pinned)
+        run: curl -fsSL https://releases.lace.cloud/install.sh | sudo sh -s -- --version "${LACE_VERSION}"
+        env:
+          LACE_VERSION: v2.39.0
 
       - name: Authenticate
         env:
-          LACE_REGISTRY_KEY: ${{ secrets.LACE_REGISTRY_KEY }}
+          LACE_TOKEN: ${{ secrets.LACE_TOKEN }}
         run: |
-          [ -z "$LACE_REGISTRY_KEY" ] && { echo "::error::LACE_REGISTRY_KEY secret not set"; exit 1; }
+          [ -z "$LACE_TOKEN" ] && { echo "::error::LACE_TOKEN secret not set"; exit 1; }
           lace whoami
 
       - name: Resolve axis
@@ -127,16 +132,26 @@ jobs:
 
       - name: Register
         env:
-          LACE_REGISTRY_KEY: ${{ secrets.LACE_REGISTRY_KEY }}
+          LACE_TOKEN: ${{ secrets.LACE_TOKEN }}
         run: |
           DIR="${{ matrix.manifest_dir }}"
           AXIS="${{ steps.axis.outputs.axis }}"
           README_FLAG=""
           [ -f "$DIR/README.md" ] && README_FLAG="--readme $DIR/README.md"
-          lace registry register \
-            --axis "$AXIS" \
-            --manifest "$DIR/manifest.yaml" \
-            $README_FLAG
+          if [ "$AXIS" = module ]; then
+            # A module publish certifies exactly this tree, so it is validated first.
+            lace module validate --path "$DIR"
+            lace registry register \
+              --axis module \
+              --manifest "$DIR/manifest.yaml" \
+              --path "$DIR" \
+              $README_FLAG
+          else
+            lace registry register \
+              --axis "$AXIS" \
+              --manifest "$DIR/manifest.yaml" \
+              $README_FLAG
+          fi
 
   summary:
     name: Summary
