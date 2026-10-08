@@ -24,7 +24,7 @@ Copy the token. It is shown once.
 ### 3. Set the secret in GitHub
 
 ```bash
-gh secret set LACE_REGISTRY_KEY --body '<paste-the-token>'
+gh secret set LACE_TOKEN --body '<paste-the-token>'
 ```
 
 ### 4. Set CODEOWNERS
@@ -125,7 +125,7 @@ runtime:
 
 ### `403: REGISTRY_PUBLISH_ORG requires an org-bound service token`
 
-Your `LACE_REGISTRY_KEY` is missing the `registry:publish:org` scope or is not bound to an org. Re-issue from the portal.
+Your `LACE_TOKEN` is missing the `registry:publish:org` scope or is not bound to an org. Re-issue from the portal.
 
 ### `403: Cannot publish under author "X" from org "Y" — author must match the org slug`
 
